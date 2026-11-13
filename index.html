@@ -2109,6 +2109,44 @@
       showToast('Berhasil keluar dari sesi admin.');
     }
 
+    function switchTab(tabId) {
+      appState.currentTab = tabId;
+
+      document.querySelectorAll('.tab-pane').forEach(pane => {
+        pane.classList.add('hidden');
+      });
+
+      const activePane = document.getElementById('tabContent-' + tabId);
+      if (activePane) {
+        activePane.classList.remove('hidden');
+      }
+
+      document.querySelectorAll('.admin-tab-btn').forEach(btn => {
+        btn.className = 'admin-tab-btn px-3 py-1.5 text-xs font-medium rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-100 flex items-center space-x-1.5 whitespace-nowrap transition-colors';
+      });
+
+      const activeBtn = document.getElementById('tabBtn-' + tabId);
+      if (activeBtn) {
+        activeBtn.className = 'admin-tab-btn px-4 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 text-white shadow-sm flex items-center space-x-1.5 whitespace-nowrap';
+      }
+
+      if (tabId === 'links') {
+        renderLinksTable();
+      } else if (tabId === 'multibio') {
+        renderMultiBioProjects();
+      } else if (tabId === 'overview') {
+        renderOverviewStats();
+      } else if (tabId === 'recyclebin') {
+        renderRecycleBin();
+      } else if (tabId === 'background') {
+        renderAppearanceFormValues();
+      } else if (tabId === 'adminusers') {
+        renderAdminUsersList();
+      } else if (tabId === 'shareqr') {
+        initShareAndQrTab();
+      }
+    }
+
     function setAppViewMode(mode) {
       const publicView = document.getElementById('publicView');
       const adminView = document.getElementById('adminView');
@@ -3815,6 +3853,107 @@
       // Simpan pilihan Bio aktif ke Google Spreadsheet agar tetap sama di perangkat lain
       if (typeof google !== 'undefined' && google.script && google.script.run) {
         google.script.run.apiSetActiveBio(projId);
+      }
+    }
+
+    function handleSaveLink(e) {
+      e.preventDefault();
+      const project = getActiveProject();
+      if (!project || !project.id) return;
+
+      const editId = document.getElementById('editLinkId').value.trim();
+      const title = document.getElementById('inpLinkTitle').value.trim();
+      let url = document.getElementById('inpLinkUrl').value.trim();
+      const icon = document.getElementById('inpLinkIcon').value.trim() || '🔗';
+      const order = Number(document.getElementById('inpLinkOrder').value) || ((project.links || []).length + 1);
+      const status = document.getElementById('inpLinkStatus').value || 'ACTIVE';
+      const ctaType = document.getElementById('inpLinkCtaType').value || 'LINK';
+      let campaign = document.getElementById('inpLinkCampaign').value.trim();
+      const featured = document.getElementById('inpLinkFeatured').value === 'YES';
+      const locked = document.getElementById('chkLinkLocked').checked;
+      const password = locked ? document.getElementById('inpLinkPassword').value.trim() : '';
+      const startAt = document.getElementById('inpLinkStartAt').value || '';
+      const endAt = document.getElementById('inpLinkEndAt').value || '';
+
+      if (ctaType === 'TEXT') {
+        const textBody = document.getElementById('inpCtaTextBody')?.value || '';
+        if (textBody.trim() !== '') campaign = textBody;
+      } else if (ctaType === 'EMBED') {
+        const embedCode = document.getElementById('inpCtaEmbedCode')?.value || '';
+        if (embedCode.trim() !== '') {
+          campaign = embedCode.trim();
+          if (!url) url = embedCode.trim();
+        }
+      } else if (ctaType === 'IMAGE_SLIDER') {
+        if (sliderImagesList.length > 0) {
+          campaign = sliderImagesList.join('|||');
+          if (!url) url = sliderImagesList[0];
+        }
+      }
+
+      let linkObj = null;
+
+      if (editId) {
+        linkObj = (project.links || []).find(l => l.id === editId);
+        if (linkObj) {
+          linkObj.title = title;
+          linkObj.url = url;
+          linkObj.icon = icon;
+          linkObj.order = order;
+          linkObj.status = status;
+          linkObj.ctaType = ctaType;
+          linkObj.campaign = campaign;
+          linkObj.featured = featured;
+          linkObj.locked = locked;
+          linkObj.password = password;
+          linkObj.startAt = startAt;
+          linkObj.endAt = endAt;
+          if (ctaType === 'IMAGE_SLIDER') {
+            linkObj.sliderImages = [...sliderImagesList];
+          }
+        }
+      } else {
+        linkObj = {
+          id: 'LNK-' + Date.now().toString(36).toUpperCase(),
+          title: title,
+          url: url,
+          icon: icon,
+          order: order,
+          status: status,
+          ctaType: ctaType,
+          campaign: campaign,
+          featured: featured,
+          locked: locked,
+          password: password,
+          clicks: 0,
+          startAt: startAt,
+          endAt: endAt
+        };
+        if (ctaType === 'IMAGE_SLIDER') {
+          linkObj.sliderImages = [...sliderImagesList];
+        }
+        project.links.push(linkObj);
+      }
+
+      resetLinkForm();
+      renderLinksTable();
+      renderPublicView();
+      showToast('Menyimpan link ke Google Spreadsheet... ☁️');
+
+      if (linkObj && typeof google !== 'undefined' && google.script && google.script.run) {
+        google.script.run
+          .withSuccessHandler(function(res) {
+            if (res && res.success) {
+              showToast('Link tersinkron ke Google Sheets ✓');
+              fetchSpreadsheetData(true);
+            } else {
+              showToast('Gagal menyimpan link: ' + (res?.message || 'Error'));
+            }
+          })
+          .withFailureHandler(function(err) {
+            showToast('Error koneksi Spreadsheet: ' + err.message);
+          })
+          .apiSaveLink(linkObj, project.id);
       }
     }
 
