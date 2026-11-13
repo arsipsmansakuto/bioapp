@@ -1893,6 +1893,7 @@
     };
 
     let pendingProtectedTarget = null;
+    let isSyncingFromServer = false;
 
     function applyServerStatePayload(response) {
       if (!response || !response.success) return false;
@@ -1933,7 +1934,8 @@
     }
 
     function loadAppState() {
-      // 1. Cek data suntikan langsung dari Google Spreadsheet saat halaman dimuat
+      // 1. Baca data injeksi awal langsung dari Google Spreadsheet Server
+      let hasServerInjectedData = false;
       try {
         const rawEl = document.getElementById('server-initial-data');
         const b64Text = rawEl ? rawEl.textContent.trim() : '';
@@ -1946,18 +1948,18 @@
           const decodedJson = new TextDecoder('utf-8').decode(bytes);
           const parsed = JSON.parse(decodedJson);
           if (parsed && parsed.success) {
-            applyServerStatePayload(parsed);
+            hasServerInjectedData = applyServerStatePayload(parsed);
           }
         }
       } catch (e) {
         console.warn('Membaca state awal server:', e);
       }
 
-      // 2. Selalu sinkronisasi langsung dengan Google Spreadsheet API
+      // 2. Selalu sinkronisasi langsung dengan Google Spreadsheet secara real-time
       if (typeof google !== 'undefined' && google.script && google.script.run) {
-        fetchSpreadsheetData(appState.bioProjects.length > 0);
-      } else if (appState.bioProjects.length === 0) {
-        // Fallback hanya jika dijalankan di luar lingkungan Google Apps Script
+        fetchSpreadsheetData(hasServerInjectedData);
+      } else if (!hasServerInjectedData && appState.bioProjects.length === 0) {
+        // Fallback hanya jika dibuka secara lokal di luar Google Apps Script
         appState.bioProjects = DEFAULT_PROJECTS;
         appState.activeBioId = 'bio-utama';
         appState.adminUsers = [
@@ -1971,19 +1973,23 @@
     }
 
     function fetchSpreadsheetData(silent = false) {
+      if (isSyncingFromServer) return;
       if (typeof google !== 'undefined' && google.script && google.script.run) {
-        if (!silent) showToast('Memuat data dari Google Spreadsheet... ☁️');
+        isSyncingFromServer = true;
+        if (!silent) showToast('Mengambil data terbaru dari Google Spreadsheet... ☁️');
         google.script.run
           .withSuccessHandler(function(response) {
+            isSyncingFromServer = false;
             if (applyServerStatePayload(response)) {
-              if (!silent) showToast('Semua data dimuat dari Google Spreadsheet ✓');
+              if (!silent) showToast('Semua data sinkron dengan Google Spreadsheet ✓');
             } else {
               showToast('Gagal memuat Spreadsheet: ' + (response?.message || 'Error'));
             }
           })
           .withFailureHandler(function(err) {
+            isSyncingFromServer = false;
             console.error('Sinkronisasi Google Spreadsheet gagal:', err);
-            showToast('Koneksi Spreadsheet terputus.');
+            if (!silent) showToast('Koneksi Spreadsheet terputus.');
           })
           .apiGetFullAppState();
       }
@@ -3374,7 +3380,27 @@
       }
 
       closeRegFormModal();
-      showToast('Pendaftaran berhasil dikirim! ✓');
+      showToast('Mengirim pendaftaran ke Google Spreadsheet... ☁️');
+
+      if (typeof google !== 'undefined' && google.script && google.script.run) {
+        google.script.run
+          .withSuccessHandler(function(res) {
+            if (res && res.success) {
+              showToast('Pendaftaran tersimpan di Google Sheets ✓');
+            }
+          })
+          .withFailureHandler(function(err) {
+            console.error('Gagal menyimpan form:', err);
+          })
+          .apiSaveFormSubmission({
+            projectId: appState.activeBioId,
+            campaign: campaignName,
+            name: name,
+            phone: phone,
+            email: email,
+            note: note
+          });
+      }
 
       // Buka konfirmasi WhatsApp jika nomor admin/tujuan tersedia
       if (targetWaPhone) {
@@ -3785,121 +3811,10 @@
       renderLinksTable();
       renderAppearanceFormValues();
       showToast('Beralih ke: ' + getActiveProject().name);
-    }
 
-    function switchTab(tabId) {
-      appState.currentTab = tabId;
-      document.querySelectorAll('.tab-pane').forEach(el => el.classList.add('hidden'));
-      document.querySelectorAll('.admin-tab-btn').forEach(btn => {
-        btn.className = 'admin-tab-btn px-3 py-1.5 text-xs font-medium rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-100 flex items-center space-x-1.5 whitespace-nowrap transition-colors';
-      });
-
-      const pane = document.getElementById(`tabContent-${tabId}`);
-      const btn = document.getElementById(`tabBtn-${tabId}`);
-      if (pane) pane.classList.remove('hidden');
-      if (btn) btn.className = 'admin-tab-btn px-4 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 text-white shadow-sm flex items-center space-x-1.5 whitespace-nowrap';
-
-      if (tabId === 'links') renderLinksTable();
-      if (tabId === 'background') renderAppearanceFormValues();
-      if (tabId === 'shareqr') initShareAndQrTab();
-      if (tabId === 'multibio') renderMultiBioProjects();
-      if (tabId === 'overview') renderOverviewStats();
-      if (tabId === 'recyclebin') renderRecycleBin();
-      if (tabId === 'adminusers') renderAdminUsersList();
-    }
-
-    function handleSaveLink(e) {
-      e.preventDefault();
-      const project = getActiveProject();
-      const editId = document.getElementById('editLinkId').value;
-
-      const title = document.getElementById('inpLinkTitle').value.trim();
-      let url = document.getElementById('inpLinkUrl').value.trim();
-      const icon = document.getElementById('inpLinkIcon').value.trim() || '🔗';
-      const order = Number(document.getElementById('inpLinkOrder').value) || 1;
-      const status = document.getElementById('inpLinkStatus').value;
-      const ctaType = document.getElementById('inpLinkCtaType').value;
-      let campaign = document.getElementById('inpLinkCampaign').value.trim();
-
-      if (ctaType === 'IMAGE_SLIDER') {
-        if (sliderImagesList.length > 0) {
-          campaign = sliderImagesList.join('|||');
-          if (!url) url = sliderImagesList[0];
-        }
-      } else if (ctaType === 'TEXT') {
-        const textBody = document.getElementById('inpCtaTextBody')?.value.trim();
-        if (textBody) campaign = textBody;
-      } else if (ctaType === 'EMBED') {
-        const embedVal = document.getElementById('inpCtaEmbedCode')?.value.trim();
-        if (embedVal) {
-          campaign = embedVal;
-          if (!url) {
-            const matchSrc = embedVal.match(/src=["']([^"']+)["']/i);
-            url = matchSrc ? matchSrc[1] : embedVal;
-          }
-        }
-      }
-
-      const featured = document.getElementById('inpLinkFeatured').value === 'YES';
-      const locked = document.getElementById('chkLinkLocked').checked;
-      const password = document.getElementById('inpLinkPassword').value.trim();
-      const startAt = document.getElementById('inpLinkStartAt').value;
-      const endAt = document.getElementById('inpLinkEndAt').value;
-
-      let linkPayload = null;
-
-      if (editId) {
-        const link = project.links.find(l => l.id === editId);
-        if (link) {
-          link.title = title;
-          link.url = url;
-          link.icon = icon;
-          link.order = order;
-          link.status = status;
-          link.ctaType = ctaType;
-          link.campaign = campaign;
-          if (ctaType === 'IMAGE_SLIDER') {
-            link.sliderImages = [...sliderImagesList];
-          } else {
-            delete link.sliderImages;
-          }
-          link.featured = featured;
-          link.locked = locked;
-          link.password = password;
-          link.startAt = startAt;
-          link.endAt = endAt;
-          linkPayload = link;
-          showToast('Link berhasil diperbarui');
-        }
-      } else {
-        const newLink = {
-          id: 'LNK-' + Date.now().toString(36).toUpperCase(),
-          title, url, icon, order, status, ctaType, campaign, featured, locked, password,
-          startAt, endAt, clicks: 0
-        };
-        if (ctaType === 'IMAGE_SLIDER' && sliderImagesList.length > 0) {
-          newLink.sliderImages = [...sliderImagesList];
-        }
-        project.links.push(newLink);
-        linkPayload = newLink;
-        showToast('Link baru berhasil ditambahkan');
-      }
-
-      saveAppState();
-      renderPublicView();
-      resetLinkForm();
-      renderLinksTable();
-
-      if (linkPayload && typeof google !== 'undefined' && google.script && google.script.run) {
-        showToast('Menyimpan ke Google Sheets...');
-        google.script.run
-          .withSuccessHandler(function(res) {
-            if (res && res.success) {
-              showToast('Tersimpan di Google Sheets ☁️');
-              fetchSpreadsheetData(true);
-            }
-          })
-          .apiSaveLink(linkPayload, project.id);
+      // Simpan pilihan Bio aktif ke Google Spreadsheet agar tetap sama di perangkat lain
+      if (typeof google !== 'undefined' && google.script && google.script.run) {
+        google.script.run.apiSetActiveBio(projId);
       }
     }
 
@@ -4490,7 +4405,12 @@
             if (res && res.success) {
               showToast('Tampilan tersinkron ke Google Sheets ☁️');
               fetchSpreadsheetData(true);
+            } else {
+              showToast('Gagal menyimpan tampilan: ' + (res?.message || 'Error'));
             }
+          })
+          .withFailureHandler(function(err) {
+            showToast('Gagal terhubung ke Google Sheets: ' + err.message);
           })
           .apiSaveAppearance({
             bgColor: project.bgColor,
